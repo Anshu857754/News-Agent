@@ -1,0 +1,22 @@
+# ---------------------------------------------------------------------------
+# Startup Intelligence Newsletter - backend dependencies
+# Install with:  pip install -r backend/requirements.txt
+# ---------------------------------------------------------------------------
+
+# --- API ------------------------------------------------------------------
+fastapi>=0.115             # the REST layer
+uvicorn>=0.34              # ASGI server that runs it
+
+# --- Validation & config --------------------------------------------------
+pydantic>=2.10             # request/response schemas
+pydantic-settings>=2.7     # .env -> typed Settings
+python-dotenv>=1.0         # .env loading
+
+# --- AI -------------------------------------------------------------------
+# OpenRouter speaks the OpenAI wire format, so the official SDK is the client;
+# only base_url and the key differ.
+openai>=1.60
+
+# --- Tests ----------------------------------------------------------------
+pytest>=8.3
+httpx>=0.28                # required by fastapi.testclient
