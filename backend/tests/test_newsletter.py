@@ -223,8 +223,9 @@ def test_application_health_endpoint():
     assert "openrouter_model" in body["config"]
 
 
-def test_root_lists_the_endpoints():
-    response = client.get("/")
+def test_service_info_lists_the_endpoints():
+    """Moved from `/` to `/api` when the dashboard took over the root path."""
+    response = client.get("/api")
     assert response.status_code == 200
     assert "/api/newsletter/generate" in response.json()["endpoints"]
 

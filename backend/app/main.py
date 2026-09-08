@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.api import newsletter
+from app.api import newsletter, trends
 from app.core.config import configure_logging, get_settings
 from app.models.schemas import ErrorResponse
 from app.services.newsletter_service import get_newsletter_service
@@ -62,6 +64,7 @@ app.add_middleware(
 )
 
 app.include_router(newsletter.router)
+app.include_router(trends.router)
 
 
 @app.exception_handler(Exception)
@@ -79,15 +82,45 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-@app.get("/", tags=["meta"], summary="Service metadata")
-def root() -> dict[str, object]:
-    """What this service is, and where to look next."""
+@app.get("/api", tags=["meta"], summary="Service metadata")
+def service_info() -> dict[str, object]:
+    """What this service is, and where to look next.
+
+    This lived at `/` until the dashboard was added; `/` now serves the UI, so
+    the machine-readable index moved here rather than disappearing.
+    """
     return {
         "service": settings.app_name,
         "version": settings.app_version,
         "docs": "/docs",
-        "endpoints": ["/health", "/api/newsletter/health", "/api/newsletter/generate"],
+        "ui": "/trends",
+        "endpoints": [
+            "/health",
+            "/api/newsletter/health",
+            "/api/newsletter/generate",
+            "/api/trends",
+            "/api/trends/discover",
+            "/api/trends/health",
+        ],
     }
+
+
+# --------------------------------------------------------------------------
+# Frontend
+#
+# The dashboard is plain HTML/CSS/JS served by this app: no Node, no bundler,
+# no second process to run. `/` and `/trends` return the same document -
+# there is one page today, and the route exists so the URL is meaningful.
+# --------------------------------------------------------------------------
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/trends", include_in_schema=False)
+def dashboard() -> FileResponse:
+    """The trend discovery dashboard."""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health", tags=["meta"], summary="Application health")
