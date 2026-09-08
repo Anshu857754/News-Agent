@@ -56,6 +56,26 @@ class Settings(BaseSettings):
     openrouter_max_retries: int = Field(default=2, alias="OPENROUTER_MAX_RETRIES")
     openrouter_temperature: float = Field(default=0.3, alias="OPENROUTER_TEMPERATURE")
 
+    # --- Trend discovery --------------------------------------------------
+    # The one place the threshold is defined. Nothing else may hardcode it.
+    trend_relevance_threshold: float = Field(
+        default=70.0, ge=0.0, le=100.0, alias="TREND_RELEVANCE_THRESHOLD"
+    )
+    trend_default_region: str = Field(default="IN", alias="TREND_DEFAULT_REGION")
+    trend_default_limit: int = Field(default=20, ge=1, le=100, alias="TREND_DEFAULT_LIMIT")
+    trend_provider_timeout_seconds: float = Field(
+        default=15.0, alias="TREND_PROVIDER_TIMEOUT_SECONDS"
+    )
+    # Google Trends has no worldwide feed, so GLOBAL is composed from these.
+    trend_global_regions: str = Field(default="US,GB,IN", alias="TREND_GLOBAL_REGIONS")
+    # Trends change slowly; re-fetching per request wastes the provider's
+    # goodwill and the LLM budget. 0 disables caching entirely.
+    trend_cache_ttl_seconds: int = Field(
+        default=900, ge=0, alias="TREND_CACHE_TTL_SECONDS"
+    )
+    # Topics per LLM request. One call for a normal run, chunked if larger.
+    trend_ai_batch_size: int = Field(default=25, ge=1, alias="TREND_AI_BATCH_SIZE")
+
     # --- Apify (used by the collection stage, later) -----------------------
     # Accepts APIFY_API_KEY too, because that is what some existing .env files
     # already use. One less thing to get wrong when setting the project up.
@@ -74,6 +94,15 @@ class Settings(BaseSettings):
     def apify_enabled(self) -> bool:
         return bool(self.apify_api_token.strip())
 
+    @property
+    def global_regions(self) -> list[str]:
+        """The regions GLOBAL is composed from, parsed from the CSV setting."""
+        return [
+            part.strip().upper()
+            for part in self.trend_global_regions.split(",")
+            if part.strip()
+        ]
+
     def describe(self) -> dict[str, object]:
         """Safe to log and to return from a health endpoint - never the key."""
         return {
@@ -85,6 +114,9 @@ class Settings(BaseSettings):
             "openrouter_key_present": bool(self.openrouter_api_key.strip()),
             "apify_key_present": self.apify_enabled,
             "timeout_seconds": self.openrouter_timeout_seconds,
+            "trend_relevance_threshold": self.trend_relevance_threshold,
+            "trend_cache_ttl_seconds": self.trend_cache_ttl_seconds,
+            "trend_global_regions": self.global_regions,
         }
 
 

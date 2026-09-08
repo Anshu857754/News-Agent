@@ -11,6 +11,7 @@ freezing them into an enum would cost a schema change per addition.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -176,3 +177,134 @@ class ErrorResponse(BaseModel):
     """The single error shape every endpoint uses."""
 
     detail: str
+
+
+# ---------------------------------------------------------------------------
+# Trend discovery
+# ---------------------------------------------------------------------------
+GLOBAL_REGION = "GLOBAL"
+
+# Two letters (an ISO country code) or the literal GLOBAL. Validated here so a
+# bad region is a 422 from the schema rather than a confusing provider error.
+_REGION_PATTERN = re.compile(r"^([A-Z]{2}|GLOBAL)$")
+
+
+class TrendPriority(str, Enum):
+    """What the cheap rule-based pre-filter decided about a topic.
+
+    The point of this stage is cost: only HIGH_PRIORITY and POSSIBLE reach the
+    LLM. LOW_PRIORITY is discarded before a single token is spent.
+    """
+
+    HIGH_PRIORITY = "HIGH_PRIORITY"
+    POSSIBLE = "POSSIBLE"
+    LOW_PRIORITY = "LOW_PRIORITY"
+
+
+def normalize_region(value: str) -> str:
+    """Uppercase and validate a region code. Raises ValueError if unusable."""
+    cleaned = " ".join(str(value or "").split()).upper()
+    if not _REGION_PATTERN.match(cleaned):
+        raise ValueError(
+            f"invalid region {value!r}: expected a two-letter country code "
+            f"(for example IN, US, GB) or {GLOBAL_REGION}"
+        )
+    return cleaned
+
+
+class TrendRequest(BaseModel):
+    """Body of POST /api/trends/discover."""
+
+    region: str = Field(default="IN", description="ISO country code, or GLOBAL.")
+    limit: int = Field(default=20, ge=1, le=100, description="Max trends to collect.")
+
+    model_config = {
+        "json_schema_extra": {"examples": [{"region": "IN", "limit": 20}]}
+    }
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def _normalize_region(cls, value: Any) -> Any:
+        return normalize_region(value) if isinstance(value, str) else value
+
+
+class TrendItem(BaseModel):
+    """One trending topic, normalised across every provider.
+
+    Fields the source does not supply stay `None`. Google Trends' RSS feed has
+    no growth figure, so `growth` is always None for that provider - inventing
+    one would make the whole object untrustworthy.
+    """
+
+    topic: str
+    region: str
+    source: str = Field(default="google_trends", description="Which provider found it.")
+    trend_score: float = Field(
+        default=0.0, ge=0.0,
+        description="Provider's relative signal, 0 when the source gives none.",
+    )
+    search_volume: Optional[int] = Field(
+        default=None, description="Approximate searches, when the source reports it."
+    )
+    growth: Optional[float] = Field(
+        default=None, description="Growth rate. None unless the source provides it."
+    )
+    collected_at: datetime = Field(default_factory=utcnow)
+
+    @field_validator("topic", mode="before")
+    @classmethod
+    def _collapse_space(cls, value: Any) -> str:
+        return " ".join(str(value or "").split())
+
+
+class TrendRelevanceResult(BaseModel):
+    """One verdict from the AI relevance stage (or its rule-based fallback)."""
+
+    topic: str
+    category: str = Field(default="Uncategorised")
+    relevant: bool = False
+    relevance_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    reason: str = Field(default="")
+
+
+class RelevantTrend(BaseModel):
+    """A trend that survived filtering, scoring and the threshold."""
+
+    topic: str
+    category: str
+    relevance_score: float = Field(ge=0.0, le=100.0)
+    reason: str
+    region: str
+    source: str
+    trend_score: float = 0.0
+    search_volume: Optional[int] = None
+    collected_at: datetime
+
+
+class RawTrendsResponse(BaseModel):
+    """Body of GET /api/trends - normalised trends, no AI involved."""
+
+    region: str
+    total: int
+    trends: list[TrendItem] = Field(default_factory=list)
+
+
+class TrendDiscoveryResponse(BaseModel):
+    """Body of POST /api/trends/discover - the full pipeline's output."""
+
+    total_trends_collected: int = 0
+    total_relevant_trends: int = 0
+    region: str
+    trends: list[RelevantTrend] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utcnow)
+    ai_used: bool = Field(
+        default=False,
+        description="False when the LLM was unavailable and rules decided instead.",
+    )
+
+
+class TrendHealthResponse(BaseModel):
+    """Body of GET /api/trends/health."""
+
+    status: str = "ok"
+    service: str = "trend-discovery"

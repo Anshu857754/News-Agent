@@ -17,6 +17,12 @@ python-dotenv>=1.0         # .env loading
 # only base_url and the key differ.
 openai>=1.60
 
+# --- HTTP -----------------------------------------------------------------
+# Used at runtime by the Google Trends provider, and by fastapi.testclient.
+# The trends feed is plain RSS, parsed with the stdlib's xml.etree - no
+# feedparser, and deliberately no pytrends: that is an unofficial client for a
+# private API and it rate-limits and breaks often.
+httpx>=0.28
+
 # --- Tests ----------------------------------------------------------------
 pytest>=8.3
-httpx>=0.28                # required by fastapi.testclient
