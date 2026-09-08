@@ -4,10 +4,11 @@ An AI-powered newsletter platform that finds what the world is searching for,
 keeps only what matters to startups, researches it across news sources, and
 writes a briefing with an LLM.
 
-> **Status: Day 1 — foundation.** The architecture, API surface and OpenRouter
-> abstraction are in place. The generation pipeline is **not built yet**, and
-> `POST /api/newsletter/generate` says so rather than returning a fabricated
-> newsletter.
+> **Status: Day 2 — trend discovery.** The foundation (Day 1), the trend
+> discovery pipeline and its dashboard (Day 2) are built and runnable. News collection and
+> newsletter generation are **not built yet**, so
+> `POST /api/newsletter/generate` reports `not_implemented` rather than
+> returning a fabricated newsletter.
 
 ---
 
@@ -20,6 +21,8 @@ writes a briefing with an LLM.
 - [Environment variables](#environment-variables)
 - [API endpoints](#api-endpoints)
 - [Architecture](#architecture)
+- [Day 2 — Trend Discovery Pipeline](#day-2--trend-discovery-pipeline)
+- [Dashboard (frontend)](#dashboard-frontend)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
 
@@ -63,22 +66,38 @@ Startup Newsletter AI
 ├── backend
 │   ├── app
 │   │   ├── api
-│   │   │   └── newsletter.py        # routes: /api/newsletter/*
+│   │   │   ├── newsletter.py        # routes: /api/newsletter/*
+│   │   │   └── trends.py            # routes: /api/trends/*
+│   │   │
+│   │   ├── static                   # the dashboard (no build step)
+│   │   │   ├── index.html
+│   │   │   ├── styles.css
+│   │   │   └── app.js
+│   │   │
+│   │   ├── providers                # external sources live here only
+│   │   │   ├── base.py              # BaseTrendProvider
+│   │   │   └── google_trends.py     # GoogleTrendsProvider (RSS)
 │   │   │
 │   │   ├── services
 │   │   │   ├── openrouter_service.py  # every LLM call goes through here
-│   │   │   └── newsletter_service.py  # pipeline orchestration
+│   │   │   ├── newsletter_service.py  # newsletter orchestration
+│   │   │   ├── trend_service.py       # trend pipeline orchestration
+│   │   │   ├── trend_filter.py        # rule-based pre-filter
+│   │   │   └── trend_relevance.py     # AI relevance classification
 │   │   │
 │   │   ├── models
 │   │   │   └── schemas.py           # request/response contract
 │   │   │
 │   │   ├── core
-│   │   │   └── config.py            # settings + logging
+│   │   │   ├── config.py            # settings + logging
+│   │   │   └── cache.py             # in-memory TTL cache
 │   │   │
 │   │   └── main.py                  # app entry point
 │   │
 │   ├── tests
-│   │   └── test_newsletter.py       # offline test suite
+│   │   ├── test_newsletter.py       # Day 1 suite
+│   │   ├── test_trends.py           # Day 2 backend suite
+│   │   └── test_frontend.py         # Day 2 dashboard suite
 │   │
 │   └── requirements.txt
 │
@@ -142,6 +161,9 @@ ever appears in code, and `.env` is git-ignored.
 | `GET` | `/health` | Liveness plus effective config (never the key) |
 | `GET` | `/api/newsletter/health` | `{"status": "ok", "service": "newsletter"}` |
 | `POST` | `/api/newsletter/generate` | Validates the request; returns `not_implemented` |
+| `GET` | `/api/trends` | Raw normalised trends (see Day 2) |
+| `POST` | `/api/trends/discover` | Full trend discovery pipeline (see Day 2) |
+| `GET` | `/api/trends/health` | `{"status": "ok", "service": "trend-discovery"}` |
 | `GET` | `/docs` | Interactive Swagger UI |
 
 ### Generating a newsletter
@@ -230,6 +252,199 @@ an HTTP response.
 
 ---
 
+## Day 2 — Trend Discovery Pipeline
+
+Finds what the world is searching for and keeps only what a startup newsletter
+should care about. This stage is complete and runnable.
+
+### Architecture
+
+```
+Google Trends
+      ↓
+Trend Collection        providers/google_trends.py  (RSS, cached)
+      ↓
+Normalization           every provider returns TrendItem
+      ↓
+Rule-Based Pre-Filter   services/trend_filter.py    (free; drops the noise)
+      ↓
+AI Relevance            services/trend_relevance.py (one batched LLM call)
+      ↓
+Threshold + Ranking     services/trend_service.py
+      ↓
+Relevant Startup Trends
+```
+
+The provider sits behind `BaseTrendProvider`, so the source can be replaced
+without touching the service, the API or the tests.
+
+### The pre-filter, and why it has three outcomes
+
+Google Trends is mostly sport, television and celebrity news. Classifying all
+of it with an LLM would spend most of the budget proving that a cricket match
+is not a startup story, so cheap keyword rules go first:
+
+| Verdict | Meaning | Goes to the LLM |
+|---|---|---|
+| `HIGH_PRIORITY` | A known startup/tech signal is present | yes |
+| `POSSIBLE` | Nothing matched either way | yes |
+| `LOW_PRIORITY` | A known noise signal, nothing to offset it | **no — discarded** |
+
+The asymmetry is deliberate. An unknown company name looks exactly like
+`POSSIBLE`, so absence of evidence never rejects a topic — only an explicit
+noise match can.
+
+### Cost control
+
+- **Batched**: all surviving topics go up in one request (`TREND_AI_BATCH_SIZE`,
+  default 25), not one call per topic.
+- **Cached**: collected trends are held in memory for `TREND_CACHE_TTL_SECONDS`
+  (default 15 minutes), keyed by region and limit. In-process, so it empties on
+  restart — acceptable for data with that TTL, and it needs no Redis.
+- **Degrades instead of failing**: if the model is unreachable, rate-limited or
+  replies with unusable JSON, affected topics fall back to rule-based scores.
+  The response's `ai_used` flag says which happened.
+
+### API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/trends` | Raw normalised trends. No LLM, so it costs nothing. |
+| `POST` | `/api/trends/discover` | The full pipeline |
+| `GET` | `/api/trends/health` | `{"status": "ok", "service": "trend-discovery"}` |
+
+```bash
+# Raw trends
+curl "http://127.0.0.1:8000/api/trends?region=IN&limit=20"
+
+# Full discovery pipeline
+curl -X POST http://127.0.0.1:8000/api/trends/discover   -H "Content-Type: application/json"   -d '{"region": "IN", "limit": 20}'
+```
+
+```json
+{
+  "total_trends_collected": 10,
+  "total_relevant_trends": 3,
+  "region": "IN",
+  "trends": [
+    {
+      "topic": "AI Agents",
+      "category": "Artificial Intelligence",
+      "relevance_score": 95,
+      "reason": "Highly relevant to AI startups and technology innovation.",
+      "region": "IN",
+      "source": "google_trends",
+      "trend_score": 0.25,
+      "search_volume": 50000,
+      "collected_at": "2026-09-08T05:50:00Z"
+    }
+  ],
+  "generated_at": "2026-09-08T06:02:11Z",
+  "ai_used": true
+}
+```
+
+`region` is an ISO country code (`IN`, `US`, `GB`, …) or `GLOBAL`. An invalid
+region is a `422`; the trend source being unreachable is a `503`. An empty
+result is a `200` — "nothing today was startup-relevant" is a valid answer.
+
+### What the data source does and does not provide
+
+Trends come from Google's public daily trending-searches RSS feed. It needs no
+key, no quota and no browser, and it is parsed with the standard library.
+
+**Fields it does not supply are `null`, never invented.** `growth` is always
+`null` for this provider. `search_volume` comes from the feed's approximate
+traffic figure when present, and `trend_score` is derived from it — `0.0` when
+the feed gives nothing, which is what "the source told us nothing" should look
+like.
+
+Google Trends has **no worldwide edition**. `GLOBAL` is composed by merging the
+country feeds in `TREND_GLOBAL_REGIONS` and deduplicating by topic; every
+returned item still reports the country it was actually found in.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | — | Required for AI classification |
+| `OPENROUTER_MODEL` | `google/gemini-2.5-flash` | Model used |
+| `TREND_RELEVANCE_THRESHOLD` | `70` | Minimum score to be returned |
+| `TREND_DEFAULT_REGION` | `IN` | Used when a request omits it |
+| `TREND_DEFAULT_LIMIT` | `20` | Used when a request omits it |
+| `TREND_GLOBAL_REGIONS` | `US,GB,IN` | What `GLOBAL` is composed from |
+| `TREND_CACHE_TTL_SECONDS` | `900` | `0` disables caching |
+| `TREND_PROVIDER_TIMEOUT_SECONDS` | `15` | Per-request timeout |
+| `TREND_AI_BATCH_SIZE` | `25` | Topics per LLM request |
+
+Without `OPENROUTER_API_KEY` the pipeline still runs: it scores by rules alone
+and returns `ai_used: false`.
+
+---
+
+## Dashboard (frontend)
+
+**StartupPulse AI** — a trend intelligence dashboard served by the same FastAPI
+process. Open <http://127.0.0.1:8000/trends> once the app is running.
+
+There is **no Node, no bundler and no `npm install`**. The page is plain
+HTML/CSS/JS in `backend/app/static/`, so `pip install -r backend/requirements.txt`
+remains the entire setup and one command runs the whole product.
+
+### What is on the page
+
+- **Header** — title, subtitle, region selector (India / Global), trend limit
+  (10 / 20 / 30) and a **Refresh Trends** button that calls
+  `POST /api/trends/discover`.
+- **Market signals** — four compact metrics: total analyzed, startup relevant,
+  average relevance, last updated (a live relative timestamp).
+- **Trend discovery** — a ranked list: rank, topic, category, `95 / 100`,
+  the model's one-line reason, and the source.
+- **States** — idle, skeleton loading (*"Analyzing market signals…"*), empty,
+  and error with a retry button.
+
+### Design
+
+One accent colour on a dark neutral ground, 1px hairline borders, flat fills
+and tabular figures. No gradients, no glass, no glow. Rows sit in a single
+bordered container divided by hairlines rather than nested cards.
+
+| Role | Token |
+|---|---|
+| Background | `#0B0F14` |
+| Cards | `#111827` |
+| Border | `#1F2937` |
+| Primary text | `#F9FAFB` |
+| Secondary text | `#9CA3AF` |
+| Accent | `#3B82F6` |
+
+### Behaviour worth knowing
+
+- **Discovery is never automatic.** Opening the page costs nothing: it runs a
+  health check and a free `GET /api/trends` preview to fill the "collected"
+  metric. The LLM only runs when you press **Refresh Trends**.
+- **Average relevance is computed in the browser** from the returned scores —
+  the API has no such field.
+- **Rules-only runs are labelled.** If the model was unreachable the note under
+  the heading reads *"scored by rules (AI unavailable)"* rather than passing
+  rule scores off as AI judgements.
+- **Errors never leak.** The UI maps status codes to its own copy; backend
+  detail goes to the browser console only.
+- **No mock data.** Every figure comes from the backend; before a run the page
+  shows an empty state rather than a plausible placeholder.
+- **Accessibility** — semantic landmarks, labelled selects, visible focus
+  rings, an `aria-live` results region, and relevance conveyed by a number and
+  a word (Critical / High / Moderate / Low), never by colour alone.
+
+### Route change
+
+The dashboard now owns `/`, so the machine-readable service index moved from
+`/` to **`/api`**. Nothing else changed; `/health`, `/docs` and every
+`/api/...` endpoint are untouched.
+
+
+---
+
 ## Tests
 
 ```bash
@@ -248,7 +463,7 @@ test asserting that no API key can appear in any response.
 
 Day 1 is the foundation only. Still to build:
 
-- **Day 2** — Google Trends discovery and startup relevance filtering
+- ~~**Day 2** — Google Trends discovery and startup relevance filtering~~ **(done)**
 - **Day 3** — dynamic news search and Google News / Apify collection
 - **Day 4** — article processing, deduplication and story ranking
 - **Day 5** — LLM analysis and the generated newsletter itself
