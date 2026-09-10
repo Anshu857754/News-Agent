@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # --- Database ---------------------------------------------------------
+    # SQLite by default so the project runs with nothing installed. Point this
+    # at PostgreSQL for anything real; no query here is dialect-specific.
+    #   postgresql+psycopg://user:pass@host:5432/startuppulse
+    database_url: str = Field(
+        default="sqlite:///./data/startuppulse.db", alias="DATABASE_URL"
+    )
+
     # --- OpenRouter -------------------------------------------------------
     openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
@@ -75,6 +83,27 @@ class Settings(BaseSettings):
     )
     # Topics per LLM request. One call for a normal run, chunked if larger.
     trend_ai_batch_size: int = Field(default=25, ge=1, alias="TREND_AI_BATCH_SIZE")
+
+    # --- Recommendation ----------------------------------------------------
+    # How the feed is scored. Kept here so the ranking can be tuned against
+    # real output without editing code. The three weights are relative, not
+    # required to sum to 1 - they are normalised at use.
+    rec_weight_interest: float = Field(default=0.45, ge=0.0, alias="REC_WEIGHT_INTEREST")
+    rec_weight_importance: float = Field(default=0.30, ge=0.0, alias="REC_WEIGHT_IMPORTANCE")
+    rec_weight_recency: float = Field(default=0.25, ge=0.0, alias="REC_WEIGHT_RECENCY")
+    # How far revealed preference may move a score, in points.
+    rec_behavior_influence: float = Field(default=20.0, ge=0.0, alias="REC_BEHAVIOR_INFLUENCE")
+    # Points deducted per repeat of a topic already used in the feed.
+    rec_diversity_penalty: float = Field(default=12.0, ge=0.0, alias="REC_DIVERSITY_PENALTY")
+    # Score given to an article matching none of the user's topics. Low, not
+    # zero: a feed that can only ever show stated interests never widens.
+    rec_baseline_interest: float = Field(default=12.0, ge=0.0, le=100.0, alias="REC_BASELINE_INTEREST")
+    # Hours after which recency has decayed to half.
+    rec_recency_halflife_hours: float = Field(
+        default=24.0, gt=0.0, alias="REC_RECENCY_HALFLIFE_HOURS"
+    )
+    feed_default_limit: int = Field(default=10, ge=1, le=100, alias="FEED_DEFAULT_LIMIT")
+    feed_max_age_hours: int = Field(default=72, ge=1, alias="FEED_MAX_AGE_HOURS")
 
     # --- Apify (used by the collection stage, later) -----------------------
     # Accepts APIFY_API_KEY too, because that is what some existing .env files
@@ -113,6 +142,7 @@ class Settings(BaseSettings):
             "openrouter_enabled": self.openrouter_enabled,
             "openrouter_key_present": bool(self.openrouter_api_key.strip()),
             "apify_key_present": self.apify_enabled,
+            "database": self.database_url.split("@")[-1],   # never the password
             "timeout_seconds": self.openrouter_timeout_seconds,
             "trend_relevance_threshold": self.trend_relevance_threshold,
             "trend_cache_ttl_seconds": self.trend_cache_ttl_seconds,

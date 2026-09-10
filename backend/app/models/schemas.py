@@ -77,6 +77,11 @@ class NewsArticle(BaseModel):
     relevance_score: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Startup relevance, 0..1."
     )
+    # Filled by the ingestion stage; absent when an article is built by hand.
+    provider: Optional[str] = Field(
+        default=None, description="Adapter that produced this, e.g. 'google_news'."
+    )
+    region: Optional[str] = Field(default=None, description="Edition it came from.")
 
     @field_validator("published_at")
     @classmethod
@@ -112,6 +117,13 @@ class NewsletterRequest(BaseModel):
     )
     time_range: TimeRange = Field(default=TimeRange.LAST_24H)
     newsletter_type: NewsletterType = Field(default=NewsletterType.DAILY)
+    # Personalisation is opt-in. Without a user there is no interest profile to
+    # write for, so the endpoint keeps its original "not implemented" answer
+    # rather than inventing a generic issue.
+    user_id: Optional[int] = Field(
+        default=None, description="Write this issue for one user's feed."
+    )
+    limit: int = Field(default=6, ge=1, le=20, description="Stories in the issue.")
 
     model_config = {
         "json_schema_extra": {
@@ -121,6 +133,7 @@ class NewsletterRequest(BaseModel):
                     "category": "Startups",
                     "time_range": "24h",
                     "newsletter_type": "daily",
+                    "user_id": 1,
                 }
             ]
         }
@@ -308,3 +321,167 @@ class TrendHealthResponse(BaseModel):
 
     status: str = "ok"
     service: str = "trend-discovery"
+
+
+# ---------------------------------------------------------------------------
+# Users and interest profiles
+# ---------------------------------------------------------------------------
+def slugify_topic(value: str) -> str:
+    """Canonical topic key. 'Artificial Intelligence' and 'AI ' must not split."""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    if not cleaned:
+        raise ValueError("topic must not be blank")
+    return cleaned[:64]
+
+
+class InterestIn(BaseModel):
+    """One line of an interest profile: a topic and how much it matters."""
+
+    topic: str = Field(max_length=120, examples=["AI"])
+    weight: float = Field(default=50.0, ge=0.0, le=100.0)
+
+    @field_validator("topic")
+    @classmethod
+    def _slug(cls, value: str) -> str:
+        slugify_topic(value)          # raises on blank
+        return " ".join(value.split())
+
+
+class InterestOut(BaseModel):
+    topic: str
+    label: str
+    weight: float
+    source: str = "explicit"
+
+
+class UserCreate(BaseModel):
+    """Body of POST /api/users."""
+
+    email: str = Field(max_length=320, examples=["founder@example.com"])
+    display_name: str = Field(default="", max_length=120)
+    region: str = Field(default="IN")
+    interests: list[InterestIn] = Field(default_factory=list)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        cleaned = " ".join(str(value or "").split()).lower()
+        # Deliberately minimal: this is an identity key, not a deliverability
+        # check. Anything stricter belongs in a verification email.
+        if "@" not in cleaned or cleaned.startswith("@") or cleaned.endswith("@"):
+            raise ValueError("email must contain a local part and a domain")
+        return cleaned
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def _region(cls, value: Any) -> Any:
+        return normalize_region(value) if isinstance(value, str) else value
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    region: str
+    created_at: datetime
+    interests: list[InterestOut] = Field(default_factory=list)
+
+
+class InterestUpdate(BaseModel):
+    """Body of PUT /api/users/{id}/interests — the whole profile, replaced."""
+
+    interests: list[InterestIn]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{"interests": [
+                {"topic": "AI", "weight": 80},
+                {"topic": "Cricket", "weight": 90},
+                {"topic": "E-commerce", "weight": 75},
+                {"topic": "Finance", "weight": 40},
+            ]}]
+        }
+    }
+
+
+class BehaviorIn(BaseModel):
+    """Body of POST /api/users/{id}/behavior."""
+
+    article_id: int
+    action: str = Field(default="view")
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, value: str) -> str:
+        cleaned = str(value or "").strip().lower()
+        if cleaned not in {"view", "open", "dismiss"}:
+            raise ValueError("action must be one of: view, open, dismiss")
+        return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Ingestion and the personalised feed
+# ---------------------------------------------------------------------------
+class IngestRequest(BaseModel):
+    """Body of POST /api/news/ingest."""
+
+    queries: list[str] = Field(
+        default_factory=list,
+        description="Search terms. Empty means: use the user's interests.",
+    )
+    region: str = Field(default="IN")
+    limit_per_query: int = Field(default=10, ge=1, le=50)
+    user_id: Optional[int] = Field(
+        default=None, description="Take the queries from this user's interests."
+    )
+    analyze: bool = Field(
+        default=True, description="Run the intelligence engine on what was stored."
+    )
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def _region(cls, value: Any) -> Any:
+        return normalize_region(value) if isinstance(value, str) else value
+
+
+class IngestResponse(BaseModel):
+    """What one ingestion run did. Every number is a count of articles."""
+
+    collected: int = 0
+    invalid_urls: int = 0
+    duplicates_in_batch: int = 0
+    already_known: int = 0
+    stored: int = 0
+    queries: list[str] = Field(default_factory=list)
+    providers_used: list[str] = Field(default_factory=list)
+    providers_failed: list[str] = Field(default_factory=list)
+    analysis: Optional[dict[str, Any]] = None
+    generated_at: datetime = Field(default_factory=utcnow)
+
+
+class FeedArticle(BaseModel):
+    """One item of a personalised feed, with the reason it was chosen."""
+
+    id: int
+    title: str
+    url: str
+    source: str
+    summary: str = ""
+    topics: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    published_at: Optional[datetime] = None
+    importance_score: float = 0.0
+    score: float = 0.0
+    reason: str = ""
+    # The parts that produced the score, so "why this?" is answerable.
+    breakdown: dict[str, float] = Field(default_factory=dict)
+
+
+class FeedResponse(BaseModel):
+    """Body of GET /api/users/{id}/feed."""
+
+    user_id: int
+    total: int = 0
+    interests: list[InterestOut] = Field(default_factory=list)
+    articles: list[FeedArticle] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utcnow)

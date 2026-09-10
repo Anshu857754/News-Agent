@@ -4,8 +4,10 @@ An AI-powered newsletter platform that finds what the world is searching for,
 keeps only what matters to startups, researches it across news sources, and
 writes a briefing with an LLM.
 
-> **Status: Day 2 — trend discovery.** The foundation (Day 1), the trend
-> discovery pipeline and its dashboard (Day 2) are built and runnable. News collection and
+> **Status: Day 3 — personalisation.** Users, interest profiles, news
+> ingestion, the intelligence engine, the recommendation engine and
+> personalised newsletters are built and runnable, on top of Day 1's foundation
+> and Day 2's trend discovery. News collection and
 > newsletter generation are **not built yet**, so
 > `POST /api/newsletter/generate` reports `not_implemented` rather than
 > returning a fabricated newsletter.
@@ -23,6 +25,7 @@ writes a briefing with an LLM.
 - [Architecture](#architecture)
 - [Day 2 — Trend Discovery Pipeline](#day-2--trend-discovery-pipeline)
 - [Dashboard (frontend)](#dashboard-frontend)
+- [Day 3 — Personalisation](#day-3--personalisation)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
 
@@ -67,24 +70,35 @@ Startup Newsletter AI
 │   ├── app
 │   │   ├── api
 │   │   │   ├── newsletter.py        # routes: /api/newsletter/*
-│   │   │   └── trends.py            # routes: /api/trends/*
+│   │   │   ├── trends.py            # routes: /api/trends/*
+│   │   │   ├── users.py             # routes: /api/users/*
+│   │   │   ├── feed.py              # routes: /api/users/{id}/feed
+│   │   │   └── news.py              # routes: /api/news/*
 │   │   │
 │   │   ├── providers                # external sources live here only
 │   │   │   ├── base.py              # BaseTrendProvider
-│   │   │   └── google_trends.py     # GoogleTrendsProvider (RSS)
+│   │   │   ├── google_trends.py     # GoogleTrendsProvider (RSS)
+│   │   │   ├── news_base.py         # BaseNewsProvider
+│   │   │   └── google_news.py       # GoogleNewsProvider (RSS)
 │   │   │
 │   │   ├── services
-│   │   │   ├── openrouter_service.py  # every LLM call goes through here
-│   │   │   ├── newsletter_service.py  # newsletter orchestration
-│   │   │   ├── trend_service.py       # trend pipeline orchestration
-│   │   │   ├── trend_filter.py        # rule-based pre-filter
-│   │   │   └── trend_relevance.py     # AI relevance classification
+│   │   │   ├── openrouter_service.py    # every LLM call goes through here
+│   │   │   ├── newsletter_service.py    # writes an issue for one reader
+│   │   │   ├── trend_service.py         # trend pipeline orchestration
+│   │   │   ├── trend_filter.py          # rule-based pre-filter
+│   │   │   ├── trend_relevance.py       # AI relevance classification
+│   │   │   ├── user_service.py          # users, interests, behaviour
+│   │   │   ├── ingestion_service.py     # collect, clean, dedupe, store
+│   │   │   ├── intelligence_service.py  # topics, entities, importance, events
+│   │   │   └── recommendation_service.py # scores and selects a feed
 │   │   │
 │   │   ├── models
-│   │   │   └── schemas.py           # request/response contract
+│   │   │   ├── schemas.py           # request/response contract
+│   │   │   └── db.py                # the 8 database tables
 │   │   │
 │   │   ├── core
 │   │   │   ├── config.py            # settings + logging
+│   │   │   ├── database.py          # engine, sessions, DATABASE_URL
 │   │   │   └── cache.py             # in-memory TTL cache
 │   │   │
 │   │   └── main.py                  # app entry point
@@ -92,7 +106,8 @@ Startup Newsletter AI
 │   ├── tests
 │   │   ├── test_newsletter.py       # Day 1 suite
 │   │   ├── test_trends.py           # Day 2 backend suite
-│   │   └── test_frontend.py         # Day 2 dashboard suite
+│   │   ├── test_frontend.py         # Day 2 dashboard suite
+│   │   └── test_personalization.py  # Day 3 suite
 │   │
 │   └── requirements.txt
 │
@@ -449,6 +464,153 @@ The dashboard now owns `/`, so the machine-readable service index moved from
 
 ---
 
+## Day 3 — Personalisation
+
+The architecture the rest of the project is being built toward:
+
+```
+USER (login / preferences)
+  -> USER INTEREST PROFILE      weighted 0-100 per topic
+  -> Google Trends + News Sources
+  -> INGESTION PIPELINE         collect, normalize, deduplicate, validate URLs
+  -> NEWS INTELLIGENCE ENGINE   topics, entities, importance, events
+  -> DATABASE                   8 tables
+  -> RECOMMENDATION ENGINE      interest, importance, recency, diversity, behaviour
+  -> PERSONALISED FEED          one per user
+  -> NEWSLETTER                 OpenRouter, written for that reader
+```
+
+### Database
+
+`DATABASE_URL` decides everything. It defaults to a SQLite file so the project
+runs with nothing installed, and points at PostgreSQL in any real deployment —
+no query in the codebase is dialect-specific.
+
+```bash
+DATABASE_URL=sqlite:///./data/startuppulse.db          # default
+DATABASE_URL=postgresql+psycopg://user:pass@host/db    # production
+```
+
+Eight tables: `users`, `topics`, `articles`, `article_topics`, `events`,
+`user_interests`, `recommendations`, `user_behavior`. Created on startup;
+the moment the schema changes under real data this becomes Alembic.
+
+Two shapes are worth knowing:
+
+- **Topics are rows, not strings.** `article_topics` carries a confidence, so
+  "how strongly is this article about AI?" is answerable. A comma-separated
+  column could not answer it.
+- **Stated and revealed preference are separate.** `user_interests` is what
+  someone says they care about; `user_behavior` is what they actually opened.
+  The recommender reads both, because the disagreement is the signal.
+
+### The pipeline
+
+| Stage | Module | What it does |
+|---|---|---|
+| Ingestion | `services/ingestion_service.py` | Collect → normalize → validate → dedupe → store |
+| Intelligence | `services/intelligence_service.py` | Topics, entities, importance, event clustering |
+| Recommendation | `services/recommendation_service.py` | Scores and selects one user's feed |
+| Newsletter | `services/newsletter_service.py` | Writes the issue for that reader |
+
+**Deduplication runs twice, for two different duplicates.** The canonical URL
+catches the same link (tracking parameters stripped first, or one article looks
+like five). Headline overlap catches the same story re-headlined by another
+outlet — with money normalised first, so `$10M` and `$10 million` match while
+`$5M` and `$50M` stay apart.
+
+**Event clustering is not the LLM's job.** Grouping N articles is an O(N²)
+comparison that rules do just as well and for nothing. It is what stops a feed
+showing one funding round five times.
+
+**Selection is greedy, not a sort.** The diversity penalty depends on what has
+already been picked, so it can only be applied while selecting — sorting once
+and slicing returns five funding stories in a row.
+
+**Everything degrades.** If OpenRouter is unreachable, rule-based tagging and
+scoring run instead and the newsletter is assembled from stored fields. The
+response says which happened rather than passing rules off as AI judgement.
+
+### API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/users` | Create a user, optionally with interests |
+| `GET` | `/api/users` | List users |
+| `GET` | `/api/users/{id}` | One user and their profile |
+| `PUT` | `/api/users/{id}/interests` | Replace the interest profile |
+| `POST` | `/api/users/{id}/behavior` | Record a view / open / dismiss |
+| `GET` | `/api/users/{id}/feed` | The personalised feed |
+| `POST` | `/api/news/ingest` | Run ingestion, then the intelligence engine |
+| `POST` | `/api/newsletter/generate` | Write an issue for a user |
+
+### Walk-through
+
+```bash
+# 1. A reader and what they care about
+curl -X POST http://127.0.0.1:8000/api/users   -H "Content-Type: application/json"   -d '{"email":"founder@example.com","display_name":"Anshu","region":"IN",
+       "interests":[{"topic":"AI","weight":80},{"topic":"Funding","weight":90},
+                    {"topic":"Fintech","weight":70},{"topic":"Cricket","weight":30}]}'
+
+# 2. Collect news for their interests, and analyse it
+curl -X POST http://127.0.0.1:8000/api/news/ingest   -H "Content-Type: application/json"   -d '{"user_id":1,"region":"IN","limit_per_query":6}'
+
+# 3. Their feed
+curl "http://127.0.0.1:8000/api/users/1/feed?limit=6"
+
+# 4. Their newsletter
+curl -X POST http://127.0.0.1:8000/api/newsletter/generate   -H "Content-Type: application/json" -d '{"user_id":1,"limit":4}'
+```
+
+Every feed item carries the reason it was chosen and the scores behind it:
+
+```json
+{
+  "title": "Positron Valued at $5 Billion as Demand for AI Chips Surges",
+  "topics": ["ai", "funding"],
+  "score": 88.3,
+  "reason": "Matches your interest in funding (90/100); widely significant story.",
+  "breakdown": {"interest": 90, "importance": 90, "recency": 83,
+                "behavior": 0, "diversity_penalty": 0}
+}
+```
+
+The breakdown is stored, not just returned — without it "why am I seeing this?"
+is unanswerable and the weights cannot be tuned against real output.
+
+### Newsletter behaviour
+
+`POST /api/newsletter/generate` **needs a `user_id`**. An issue is written for
+one reader's interest profile, so without a user it reports `not_implemented`
+rather than inventing a generic issue.
+
+The model writes prose, never facts: every headline, link and source in the
+output comes from the database. It is given the stories and asked to introduce
+and summarise them — it is never asked what the news is.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./data/startuppulse.db` | SQLite or PostgreSQL |
+| `REC_WEIGHT_INTEREST` | `0.45` | Weight of interest matching |
+| `REC_WEIGHT_IMPORTANCE` | `0.30` | Weight of story importance |
+| `REC_WEIGHT_RECENCY` | `0.25` | Weight of freshness |
+| `REC_BEHAVIOR_INFLUENCE` | `20` | How far behaviour moves a score |
+| `REC_DIVERSITY_PENALTY` | `12` | Deducted per repeated topic |
+| `REC_BASELINE_INTEREST` | `12` | Score for an unmatched topic |
+| `REC_RECENCY_HALFLIFE_HOURS` | `24` | Freshness half-life |
+| `FEED_DEFAULT_LIMIT` | `10` | Feed size |
+| `FEED_MAX_AGE_HOURS` | `72` | How far back candidates go |
+
+### Not built yet
+
+Authentication (users are created without passwords), email delivery,
+scheduling, and a frontend for the feed — the dashboard still covers trend
+discovery only.
+
+---
+
 ## Tests
 
 ```bash
@@ -468,6 +630,7 @@ test asserting that no API key can appear in any response.
 Day 1 is the foundation only. Still to build:
 
 - ~~**Day 2** — Google Trends discovery and startup relevance filtering~~ **(done)**
+- ~~**Day 3** — users, ingestion, intelligence, recommendations, personalised newsletters~~ **(done)**
 - **Day 3** — dynamic news search and Google News / Apify collection
 - **Day 4** — article processing, deduplication and story ranking
 - **Day 5** — LLM analysis and the generated newsletter itself

@@ -179,7 +179,8 @@ def test_newsletter_health_endpoint():
     assert response.json() == {"status": "ok", "service": "newsletter"}
 
 
-def test_generate_endpoint_returns_the_placeholder():
+def test_generate_without_a_user_reports_not_implemented():
+    """An issue is written for one reader, so no user means nothing to write."""
     response = client.post(
         "/api/newsletter/generate",
         json={
@@ -192,7 +193,7 @@ def test_generate_endpoint_returns_the_placeholder():
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "not_implemented"
-    assert body["message"] == "Newsletter generation pipeline foundation is ready"
+    assert "user_id" in body["message"]
     assert body["newsletter"] is None
     assert body["request"]["time_range"] == "24h"
 

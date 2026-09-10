@@ -12,6 +12,12 @@ pydantic>=2.10             # request/response schemas
 pydantic-settings>=2.7     # .env -> typed Settings
 python-dotenv>=1.0         # .env loading
 
+# --- Database -------------------------------------------------------------
+# SQLite in development, PostgreSQL in production - the models and queries are
+# identical, so only DATABASE_URL changes. Add a driver for Postgres:
+#   pip install "psycopg[binary]"
+sqlalchemy>=2.0
+
 # --- AI -------------------------------------------------------------------
 # OpenRouter speaks the OpenAI wire format, so the official SDK is the client;
 # only base_url and the key differ.

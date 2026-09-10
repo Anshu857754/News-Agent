@@ -19,8 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import newsletter, trends
+from app.api import feed, news, newsletter, trends, users
 from app.core.config import configure_logging, get_settings
+from app.core.database import init_db
 from app.models.schemas import ErrorResponse
 from app.services.newsletter_service import get_newsletter_service
 
@@ -34,6 +35,7 @@ async def lifespan(_app: FastAPI):
     settings = get_settings()
     log.info("%s v%s starting", settings.app_name, settings.app_version)
     log.info("configuration: %s", settings.describe())
+    init_db()
 
     if not settings.openrouter_enabled:
         log.warning(
@@ -65,6 +67,9 @@ app.add_middleware(
 
 app.include_router(newsletter.router)
 app.include_router(trends.router)
+app.include_router(users.router)
+app.include_router(feed.router)
+app.include_router(news.router)
 
 
 @app.exception_handler(Exception)
@@ -101,6 +106,9 @@ def service_info() -> dict[str, object]:
             "/api/trends",
             "/api/trends/discover",
             "/api/trends/health",
+            "/api/users",
+            "/api/users/{id}/feed",
+            "/api/news/ingest",
         ],
     }
 
