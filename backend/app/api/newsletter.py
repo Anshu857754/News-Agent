@@ -1,22 +1,27 @@
 """Startup Intelligence Newsletter endpoints.
 
 Thin by design: validate, delegate to `NewsletterService`, serialise. No
-pipeline logic lives here, so the generation stages can be built and tested
-without going through HTTP.
+pipeline logic lives here, so generation can be built and tested without going
+through HTTP.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+from app.core.database import get_db
 from app.models.schemas import (
+    ErrorResponse,
     GenerationResponse,
     HealthResponse,
     NewsletterRequest,
 )
+from app.services import user_service
 from app.services.newsletter_service import NewsletterService, get_newsletter_service
+from app.services.user_service import UserNotFound
 
 log = logging.getLogger(__name__)
 
@@ -36,16 +41,27 @@ def health() -> HealthResponse:
 @router.post(
     "/generate",
     response_model=GenerationResponse,
-    summary="Generate a startup intelligence newsletter",
+    responses={404: {"model": ErrorResponse}},
+    summary="Generate a personalised newsletter",
 )
 async def generate(
     request: NewsletterRequest,
     service: NewsletterService = Depends(get_newsletter_service),
+    session: Session = Depends(get_db),
 ) -> GenerationResponse:
-    """Request an issue.
+    """Write an issue for one reader.
 
-    The request body is fully validated and the foundation is in place, but the
-    generation pipeline itself is not built yet: this returns
-    `status="not_implemented"` rather than a fabricated newsletter.
+    With a `user_id`, this builds that user's feed and writes it up. Without
+    one there is no interest profile to write against, so it reports
+    `not_implemented` rather than inventing a generic issue.
     """
-    return await service.generate(request)
+    user = None
+    if request.user_id is not None:
+        try:
+            user = user_service.get_user(session, request.user_id)
+        except UserNotFound:
+            raise HTTPException(
+                status_code=404, detail=f"No user with id {request.user_id}"
+            ) from None
+
+    return await service.generate(request, session=session, user=user)
