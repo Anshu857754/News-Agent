@@ -108,19 +108,22 @@ def service_info() -> dict[str, object]:
 # --------------------------------------------------------------------------
 # Frontend
 #
-# The dashboard is plain HTML/CSS/JS served by this app: no Node, no bundler,
-# no second process to run. `/` and `/trends` return the same document -
-# there is one page today, and the route exists so the URL is meaningful.
+# The dashboard is plain HTML/CSS/JS in the repository's `frontend/` folder -
+# no Node, no bundler, no second process to run. Serving it from here is what
+# makes one command run the whole product; the files stay outside this package
+# so the frontend remains a thing you can also host on its own.
+#
+# `/trends` returns the same document as `/`. There is one page today; the
+# route exists so the URL means something. Because the folder is mounted at the
+# root, the page's relative asset links resolve from either URL.
 # --------------------------------------------------------------------------
-STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
-@app.get("/", include_in_schema=False)
 @app.get("/trends", include_in_schema=False)
 def dashboard() -> FileResponse:
     """The trend discovery dashboard."""
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/health", tags=["meta"], summary="Application health")
@@ -133,3 +136,11 @@ def health() -> dict[str, object]:
         "config": settings.describe(),
         "llm": get_newsletter_service().llm_status(),
     }
+
+
+# Mounted last, deliberately: a mount at "/" matches every path, so it must be
+# registered after every API route or it would shadow them.
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+else:  # pragma: no cover - only when the folder was not checked out
+    log.warning("frontend/ not found at %s; the API runs without a UI", FRONTEND_DIR)

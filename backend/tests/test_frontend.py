@@ -1,9 +1,10 @@
 """Tests for the trend discovery dashboard.
 
-The page is plain HTML/CSS/JS served by FastAPI, so these tests check what can
-be checked without a browser: that the assets are served, that the document
-contains the structure the spec asks for, and - the one that actually catches
-regressions - that no mock trend data was left behind in the JavaScript.
+The page lives in the repository's `frontend/` folder and is mounted by
+`app.main`, so these tests check what can be checked without a browser: that
+the assets are served, that the document contains the structure the spec asks
+for, and - the one that actually catches regressions - that no mock trend data
+was left behind in the JavaScript.
 
 Browser behaviour (rendering, responsive layout, the states firing in order)
 is not covered here; that needs a real browser and is verified by hand.
@@ -25,7 +26,7 @@ def _page() -> str:
 
 
 def _script() -> str:
-    return client.get("/static/app.js").text
+    return client.get("/app.js").text
 
 
 # ---------------------------------------------------------------------------
@@ -45,8 +46,9 @@ def test_dashboard_is_also_served_at_trends():
 
 def test_static_assets_are_served():
     for path, expected in (
-        ("/static/styles.css", "text/css"),
-        ("/static/app.js", "javascript"),
+        ("/styles.css", "text/css"),
+        ("/app.js", "javascript"),
+        ("/config.js", "javascript"),
     ):
         response = client.get(path)
         assert response.status_code == 200, path
@@ -132,7 +134,7 @@ def test_results_region_announces_updates():
 
 
 def test_focus_styles_are_not_removed():
-    css = client.get("/static/styles.css").text
+    css = client.get("/styles.css").text
     assert ":focus-visible" in css
     assert "outline: none" not in css.replace(" ", " ")
 
@@ -149,19 +151,19 @@ def test_relevance_is_not_communicated_by_colour_alone():
 # Design system
 # ---------------------------------------------------------------------------
 def test_stylesheet_uses_the_projects_palette():
-    css = client.get("/static/styles.css").text
+    css = client.get("/styles.css").text
     for colour in ("#0B0F14", "#111827", "#1F2937", "#F9FAFB", "#9CA3AF", "#3B82F6"):
         assert colour in css, colour
 
 
 def test_stylesheet_avoids_decorative_gradients():
     """One shimmer sweep for the skeleton is allowed; nothing else."""
-    css = client.get("/static/styles.css").text
+    css = client.get("/styles.css").text
     assert css.count("gradient(") <= 1
 
 
 def test_stylesheet_is_responsive():
-    css = client.get("/static/styles.css").text
+    css = client.get("/styles.css").text
     assert css.count("@media") >= 2
     assert "max-width: 620px" in css
 
@@ -241,5 +243,40 @@ def test_docs_still_work():
 
 
 def test_no_api_key_reaches_the_browser():
-    for path in ("/", "/static/app.js", "/static/styles.css"):
+    for path in ("/", "/app.js", "/styles.css", "/config.js"):
         assert "sk-or-" not in client.get(path).text, path
+
+
+# ---------------------------------------------------------------------------
+# The frontend lives outside the backend package
+# ---------------------------------------------------------------------------
+def test_frontend_is_served_from_the_repository_folder():
+    """One copy of the UI, in frontend/, not duplicated inside the package."""
+    from app.main import FRONTEND_DIR
+
+    assert FRONTEND_DIR.is_dir(), FRONTEND_DIR
+    assert FRONTEND_DIR.name == "frontend"
+    assert (FRONTEND_DIR / "index.html").is_file()
+
+    stale = FRONTEND_DIR.parent / "backend" / "app" / "static"
+    assert not stale.exists(), "backend/app/static/ is a duplicate of frontend/"
+
+
+def test_assets_are_referenced_relatively():
+    """Relative links are what let the same files be hosted standalone."""
+    page = _page()
+    assert 'href="styles.css"' in page
+    assert 'src="app.js"' in page
+    assert 'src="config.js"' in page
+    assert "/static/" not in page
+
+
+def test_api_base_is_configurable():
+    assert "STARTUPPULSE_API_BASE" in client.get("/config.js").text
+    assert "API_BASE" in _script()
+
+
+def test_mount_does_not_shadow_the_api():
+    """A mount at "/" matches everything, so this is the regression to catch."""
+    for path in ("/health", "/api", "/api/trends/health", "/api/newsletter/health"):
+        assert client.get(path).status_code == 200, path
