@@ -69,11 +69,6 @@ Startup Newsletter AI
 │   │   │   ├── newsletter.py        # routes: /api/newsletter/*
 │   │   │   └── trends.py            # routes: /api/trends/*
 │   │   │
-│   │   ├── static                   # the dashboard (no build step)
-│   │   │   ├── index.html
-│   │   │   ├── styles.css
-│   │   │   └── app.js
-│   │   │
 │   │   ├── providers                # external sources live here only
 │   │   │   ├── base.py              # BaseTrendProvider
 │   │   │   └── google_trends.py     # GoogleTrendsProvider (RSS)
@@ -100,6 +95,13 @@ Startup Newsletter AI
 │   │   └── test_frontend.py         # Day 2 dashboard suite
 │   │
 │   └── requirements.txt
+│
+├── frontend                         # the dashboard (no build step)
+│   ├── index.html
+│   ├── styles.css
+│   ├── app.js
+│   ├── config.js                    # where the backend lives
+│   └── README.md
 │
 ├── .env.example
 ├── .gitignore
@@ -388,8 +390,10 @@ and returns `ai_used: false`.
 process. Open <http://127.0.0.1:8000/trends> once the app is running.
 
 There is **no Node, no bundler and no `npm install`**. The page is plain
-HTML/CSS/JS in `backend/app/static/`, so `pip install -r backend/requirements.txt`
-remains the entire setup and one command runs the whole product.
+HTML/CSS/JS in `frontend/`, which the backend mounts, so
+`pip install -r backend/requirements.txt` remains the entire setup and one
+command runs the whole product. The files sit outside the backend package, so
+the frontend can also be hosted on its own — see [frontend/README.md](frontend/README.md).
 
 ### What is on the page
 
